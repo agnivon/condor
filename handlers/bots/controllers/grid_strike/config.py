@@ -50,6 +50,7 @@ DEFAULTS: Dict[str, Any] = {
         "take_profit": 0.0005,
         "take_profit_order_type": 3,
     },
+    "min_order_size": None,
 }
 
 
@@ -202,6 +203,14 @@ FIELDS: Dict[str, ControllerField] = {
         hint="Order type for take profit",
         default=ORDER_TYPE_LIMIT_MAKER,
     ),
+    "min_order_size": ControllerField(
+        name="min_order_size",
+        label="Min Order Size",
+        type="float",
+        required=False,
+        hint="Optional minimum order size",
+        default=None,
+    ),
 }
 
 
@@ -221,6 +230,7 @@ FIELD_ORDER: List[str] = [
     "max_orders_per_batch",
     "order_frequency",
     "min_order_amount_quote",
+    "min_order_size",
     "min_spread_between_orders",
     "take_profit",
     "open_order_type",
@@ -257,6 +267,7 @@ EDITABLE_FIELDS: List[str] = [
     "take_profit",
     "min_spread_between_orders",
     "min_order_amount_quote",
+    "min_order_size",
     "max_open_orders",
     "activation_bounds",
 ]
