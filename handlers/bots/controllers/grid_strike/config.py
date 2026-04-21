@@ -52,6 +52,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "coerce_tp_to_step": False,
     "boundary_take_profit": True,
+    "min_order_size": None,
 }
 
 
@@ -220,6 +221,14 @@ FIELDS: Dict[str, ControllerField] = {
         hint="Take profit at grid boundary if price is outside grid range",
         default=True,
     ),
+    "min_order_size": ControllerField(
+        name="min_order_size",
+        label="Min Order Size",
+        type="float",
+        required=False,
+        hint="Optional minimum order size",
+        default=None,
+    ),
 }
 
 
@@ -239,6 +248,7 @@ FIELD_ORDER: List[str] = [
     "max_orders_per_batch",
     "order_frequency",
     "min_order_amount_quote",
+    "min_order_size",
     "min_spread_between_orders",
     "take_profit",
     "open_order_type",
@@ -277,6 +287,7 @@ EDITABLE_FIELDS: List[str] = [
     "take_profit",
     "min_spread_between_orders",
     "min_order_amount_quote",
+    "min_order_size",
     "max_open_orders",
     "activation_bounds",
     "boundary_take_profit",
