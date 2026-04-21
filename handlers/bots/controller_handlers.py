@@ -5680,6 +5680,15 @@ async def _get_available_credentials(client) -> List[str]:
         logger.warning(f"Could not fetch accounts, using default: {e}")
         return ["master_account"]
 
+async def _get_available_images(client) -> List[str]:
+    """Fetch list of available docker images (placeholder for future dynamic fetching)"""
+    try:
+        images: List[str] = await client.docker.get_available_images("hummingbot")
+        return list(set(images + AVAILABLE_IMAGES)) if images else AVAILABLE_IMAGES
+    except Exception as e:
+        logger.warning(f"Could not fetch available images, using defaults: {e}")
+        return AVAILABLE_IMAGES
+
 
 async def show_deploy_config_step(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -5722,7 +5731,7 @@ async def show_deploy_config_step(
 
     # Build controllers list in code block for readability
     controllers_block = "\n".join(controller_names)
-    image_short = image.split("/")[-1] if "/" in image else image
+    # image_short = image.split("/")[-1] if "/" in image else image
 
     lines = [
         r"*🚀 Deploy Controllers*",
@@ -5735,28 +5744,16 @@ async def show_deploy_config_step(
         "",
         f"  📝  *Name:*      `{escape_markdown_v2(instance_name)}`",
         f"  👤  *Account:*   `{escape_markdown_v2(creds)}`",
-        f"  🐳  *Image:*     `{escape_markdown_v2(image_short)}`",
+        f"  🐳  *Image:*     `{escape_markdown_v2(image)}`",
         "",
         r"_Tap buttons below to change settings_",
     ]
 
     # Build keyboard - one button per row for better readability
     keyboard = [
-        [
-            InlineKeyboardButton(
-                f"📝 Name: {instance_name[:25]}", callback_data="bots:select_name:_show"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"👤 Account: {creds}", callback_data="bots:select_creds:_show"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"🐳 Image: {image_short}", callback_data="bots:select_image:_show"
-            )
-        ],
+        [InlineKeyboardButton(f"📝 Name: {instance_name[:25]}", callback_data="bots:select_name:_show")],
+        [InlineKeyboardButton(f"👤 Account: {creds}", callback_data="bots:select_creds:_show")],
+        [InlineKeyboardButton(f"🐳 Image: {image}", callback_data="bots:select_image:_show")],
         [InlineKeyboardButton("✅ Deploy Now", callback_data="bots:execute_deploy")],
         [InlineKeyboardButton("« Back", callback_data="bots:deploy_menu")],
     ]
@@ -5837,11 +5834,13 @@ async def handle_select_image(
 ) -> None:
     """Handle docker image selection"""
     query = update.callback_query
+    chat_id = update.effective_chat.id
 
     if image == "_show":
         # Show available images
         deploy_params = context.user_data.get("deploy_params", {})
         current = deploy_params.get("image", "hummingbot/hummingbot:latest")
+        client, _ = await get_bots_client(chat_id, context.user_data)
 
         lines = [
             r"*Select Docker Image*",
@@ -5852,17 +5851,14 @@ async def handle_select_image(
         ]
 
         # Build buttons for each image
+        available_images = await _get_available_images(client)
         keyboard = []
-        for img in AVAILABLE_IMAGES:
+        for img in available_images:
             marker = "✓ " if img == current else ""
-            img_short = img.split("/")[-1] if "/" in img else img
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        f"{marker}{img_short}", callback_data=f"bots:select_image:{img}"
-                    )
-                ]
-            )
+            # img_short = img.split("/")[-1] if "/" in img else img
+            keyboard.append([
+                InlineKeyboardButton(f"{marker}{img}", callback_data=f"bots:select_image:{img}")
+            ])
 
         keyboard.append(
             [
@@ -5881,8 +5877,8 @@ async def handle_select_image(
         deploy_params["image"] = image
         context.user_data["deploy_params"] = deploy_params
 
-        img_short = image.split("/")[-1] if "/" in image else image
-        await query.answer(f"Image set to {img_short}")
+        # img_short = image.split("/")[-1] if "/" in image else image
+        await query.answer(f"Image set to {image}")
         await show_deploy_config_step(update, context)
 
 
@@ -5965,7 +5961,7 @@ async def process_instance_name_input(
         controllers = deploy_params.get("controllers_config", [])
 
         controllers_block = "\n".join(controllers)
-        image_short = image.split("/")[-1] if "/" in image else image
+        # image_short = image.split("/")[-1] if "/" in image else image
 
         lines = [
             r"*🚀 Deploy Controllers*",
@@ -5976,33 +5972,16 @@ async def process_instance_name_input(
             "",
             f"*Name:*     `{escape_markdown_v2(custom_name)}`",
             f"*Account:*  `{escape_markdown_v2(creds)}`",
-            f"*Image:*    `{escape_markdown_v2(image_short)}`",
+            f"*Image:*    `{escape_markdown_v2(image)}`",
             "",
             r"_Tap buttons below to change settings_",
         ]
 
         keyboard = [
-            [
-                InlineKeyboardButton(
-                    f"📝 Name: {custom_name[:25]}",
-                    callback_data="bots:select_name:_show",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    f"👤 Account: {creds}", callback_data="bots:select_creds:_show"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    f"🐳 Image: {image_short}", callback_data="bots:select_image:_show"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Deploy Now", callback_data="bots:execute_deploy"
-                )
-            ],
+            [InlineKeyboardButton(f"📝 Name: {custom_name[:25]}", callback_data="bots:select_name:_show")],
+            [InlineKeyboardButton(f"👤 Account: {creds}", callback_data="bots:select_creds:_show")],
+            [InlineKeyboardButton(f"🐳 Image: {image}", callback_data="bots:select_image:_show")],
+            [InlineKeyboardButton("✅ Deploy Now", callback_data="bots:execute_deploy")],
             [InlineKeyboardButton("« Back", callback_data="bots:deploy_menu")],
         ]
 
@@ -6040,7 +6019,7 @@ async def handle_deploy_confirm(
     context.user_data["deploy_generated_name"] = generated_name
 
     controllers_str = "\n".join([f"• `{escape_markdown_v2(c)}`" for c in controllers])
-    image_short = image.split("/")[-1] if "/" in image else image
+    # image_short = image.split("/")[-1] if "/" in image else image
 
     lines = [
         r"*Confirm Deployment*",
@@ -6049,7 +6028,7 @@ async def handle_deploy_confirm(
         controllers_str,
         "",
         f"*Account:* `{escape_markdown_v2(creds)}`",
-        f"*Image:* `{escape_markdown_v2(image_short)}`",
+        f"*Image:* `{escape_markdown_v2(image)}`",
         "",
         r"*Instance Name:*",
         f"`{escape_markdown_v2(generated_name)}`",
