@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Awaitable
 
@@ -19,8 +20,8 @@ log = logging.getLogger(__name__)
 
 ACP_COMMANDS: dict[str, str] = {
     "claude-code": "claude-agent-acp",
-    "gemini": "gemini --experimental-acp",
-    "copilot": "copilot --acp",
+    "gemini": "npx @google/gemini-cli --acp",
+    "copilot": "npx @github/copilot --acp --stdio",
     "codex": "npx @zed-industries/codex-acp"
 }
 
@@ -52,6 +53,7 @@ class ToolCallUpdate:
     tool_call_id: str
     status: str | None = None
     title: str | None = None
+    output: str | None = None
 
 
 @dataclass
@@ -112,29 +114,36 @@ class ACPClient:
             cwd=self.working_dir,
             env=env,
             limit=10 * 1024 * 1024,
+            start_new_session=True,  # Own process group so we can kill all children
         )
         self._read_task = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
-        await self._peer.send_request(
-            "initialize",
-            {
-                "protocolVersion": 1,
-                "clientCapabilities": {},
-                "clientInfo": {"name": "condor", "version": "0.1.0"},
-            },
-            self._process.stdin,
-        )
-        result = await self._peer.send_request(
-            "session/new",
-            {"cwd": self.working_dir, "mcpServers": self.mcp_servers},
-            self._process.stdin,
-        )
+        try:
+            await self._peer.send_request(
+                "initialize",
+                {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                    "clientInfo": {"name": "condor", "version": "0.1.0"},
+                },
+                self._process.stdin,
+            )
+            result = await self._peer.send_request(
+                "session/new",
+                {"cwd": self.working_dir, "mcpServers": self.mcp_servers},
+                self._process.stdin,
+            )
+        except Exception:
+            # Handshake failed -- kill the subprocess to prevent orphan
+            await self.stop()
+            raise
+
         self._session_id = result["sessionId"]
         log.info("ACP session started: %s (cmd=%s)", self._session_id, self.command)
 
     async def stop(self) -> None:
-        """Terminate the subprocess."""
+        """Terminate the subprocess and all its children (MCP servers)."""
         self._peer.cancel_all()
         for task in (self._read_task, self._stderr_task):
             if task:
@@ -144,11 +153,27 @@ class ACPClient:
                 except asyncio.CancelledError:
                     pass
         if self._process and self._process.returncode is None:
-            self._process.terminate()
+            pid = self._process.pid
+            try:
+                # Kill the entire process group (subprocess + MCP server children)
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5)
             except asyncio.TimeoutError:
-                self._process.kill()
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    self._process.kill()
+                # Always reap after SIGKILL to prevent zombies
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    log.warning("ACP process %d could not be reaped", pid)
+            log.debug("ACP process group %d stopped", pid)
+        # Clear reference so alive returns False even if reap failed
+        self._process = None
 
     @property
     def alive(self) -> bool:
@@ -298,6 +323,7 @@ class ACPClient:
                     tool_call_id=update.get("toolCallId", ""),
                     status=update.get("status"),
                     title=update.get("title"),
+                    output=update.get("output"),
                 )
             )
 

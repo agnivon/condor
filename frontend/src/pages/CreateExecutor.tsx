@@ -1,20 +1,23 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowUpDown,
+  BarChart3,
   CheckCircle,
   Grid3X3,
   Layers,
   Loader2,
   Rocket,
+  Settings2,
   TrendingUp,
 } from "lucide-react";
 
 import { ExchangeSelector } from "@/components/market/ExchangeSelector";
 import { PairSelector, useTradingRules } from "@/components/market/PairSelector";
 import { PriceTicker } from "@/components/market/PriceTicker";
+import { MarketDepthPanel } from "@/components/market/MarketDepthPanel";
 import { GridChart } from "@/components/grid/GridChart";
 import { GridConfigPanel, useGridValidation } from "@/components/grid/GridConfigPanel";
 import { PositionConfigPanel, usePositionConfig } from "@/components/executor/PositionConfigPanel";
@@ -196,34 +199,75 @@ export function CreateExecutor() {
   const pair = gridState.pair;
   const isSpot = isSpotConnector(connector);
 
+  // Apply connector/pair from URL params (e.g. from Executors detail panel)
+  useEffect(() => {
+    const urlConnector = searchParams.get("connector");
+    const urlPair = searchParams.get("pair");
+    if (urlConnector) {
+      gridDispatch({ type: "SET_CONNECTOR", value: urlConnector });
+      searchParams.delete("connector");
+    }
+    if (urlPair) {
+      gridDispatch({ type: "SET_PAIR", value: urlPair });
+      searchParams.delete("pair");
+    }
+    if (urlConnector || urlPair) {
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [successId, setSuccessId] = useState<string | null>(null);
-  const [onlyConnected, setOnlyConnected] = useState(true);
+  const [rightPanel, setRightPanel] = useState<"config" | "depth">("config");
+  const [rightPanelWidth, setRightPanelWidth] = useState(288);
+  const [bottomPaneHeight, setBottomPaneHeight] = useState(200);
+  const [selectedExecutorId, setSelectedExecutorId] = useState<string | null>(null);
 
-  const { data: allConnectors } = useQuery({
-    queryKey: ["connectors", server],
-    queryFn: () => api.getConnectors(server!),
-    enabled: !!server,
-  });
+  const startHDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = rightPanelWidth;
+    document.body.style.cursor = "col-resize";
+    const onMove = (ev: MouseEvent) => {
+      setRightPanelWidth(Math.max(260, Math.min(500, startW + (startX - ev.clientX))));
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [rightPanelWidth]);
 
-  const { data: connectedExchanges } = useQuery({
+  const startVDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = bottomPaneHeight;
+    document.body.style.cursor = "row-resize";
+    const onMove = (ev: MouseEvent) => {
+      setBottomPaneHeight(Math.max(100, Math.min(500, startH + (startY - ev.clientY))));
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [bottomPaneHeight]);
+
+  const { data: connectors = [] } = useQuery({
     queryKey: ["connected-exchanges", server],
     queryFn: () => api.getConnectedExchanges(server!),
     enabled: !!server,
   });
 
-  const connectors = useMemo(() => {
-    if (!allConnectors) return [];
-    if (!onlyConnected || !connectedExchanges?.length) return allConnectors;
-    const connectedBases = new Set(connectedExchanges.map((c) => c.replace(/_perpetual$/, "")));
-    return allConnectors.filter((c) => {
-      const base = c.replace(/_perpetual$/, "");
-      return connectedBases.has(base);
-    });
-  }, [allConnectors, connectedExchanges, onlyConnected]);
-
-  // WS subscription for executor data
-  const execChannels = useMemo(() => server ? [`executors:${server}`] : [], [server]);
-  useCondorWebSocket(execChannels, server);
+  // WS for executor data (candle streams are managed by candleStore)
+  const wsChannels = useMemo(
+    () => server ? [`executors:${server}`] : [],
+    [server],
+  );
+  useCondorWebSocket(wsChannels, server);
 
   // Main controller data (executors + positions filtered by connector/pair)
   const { executors: mainExecutors, overlays: mainOverlays, positions: mainPositions, isLoadingPositions } =
@@ -231,11 +275,12 @@ export function CreateExecutor() {
 
   const rulesData = useTradingRules(server ?? "", connector);
 
-  // Persist last-used connector/pair to localStorage
+  // Persist last-used connector/pair to localStorage & clear executor selection
   useEffect(() => {
     try {
       localStorage.setItem(LAST_MARKET_KEY, JSON.stringify({ connector, pair }));
     } catch { /* ok */ }
+    setSelectedExecutorId(null);
   }, [connector, pair]);
 
   // Sync connector to filtered list
@@ -298,15 +343,6 @@ export function CreateExecutor() {
       case "dca": return dcaConfig.validation;
     }
   }, [executorType, gridValidation, positionConfig.validation, orderConfig.validation, dcaConfig.validation]);
-
-  const activeSide = useMemo(() => {
-    switch (executorType) {
-      case "grid": return gridState.side;
-      case "position": return positionConfig.state.side;
-      case "order": return orderConfig.state.side;
-      case "dca": return dcaConfig.state.side;
-    }
-  }, [executorType, gridState.side, positionConfig.state.side, orderConfig.state.side, dcaConfig.state.side]);
 
   // Chart props depend on active type
   const chartProps = useMemo(() => {
@@ -406,7 +442,9 @@ export function CreateExecutor() {
         case "dca": dcaConfig.save(); break;
       }
       setSuccessId(data.executor_id);
-      setTimeout(() => navigate("/executors"), 2500);
+      // Auto-dismiss success toast after 2.5s — stay on this page
+      // so the new executor appears in the bottom pane via WS
+      setTimeout(() => setSuccessId(null), 2500);
     },
   });
 
@@ -420,7 +458,7 @@ export function CreateExecutor() {
       <div className="flex items-center border-b border-[var(--color-border)] bg-[var(--color-surface)]">
         {/* Back button */}
         <button
-          onClick={() => navigate("/executors")}
+          onClick={() => navigate(-1)}
           className="flex items-center gap-1 border-r border-[var(--color-border)] px-3 py-2.5 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
@@ -441,17 +479,6 @@ export function CreateExecutor() {
               onChange={(v) => gridDispatch({ type: "SET_CONNECTOR", value: v })}
             />
           </div>
-          {connectedExchanges && connectedExchanges.length > 0 && (
-            <label className="flex cursor-pointer items-center gap-1.5 border-l border-[var(--color-border)] px-3 py-2.5 text-[10px] text-[var(--color-text-muted)] select-none hover:bg-[var(--color-surface-hover)]">
-              <input
-                type="checkbox"
-                checked={onlyConnected}
-                onChange={(e) => setOnlyConnected(e.target.checked)}
-                className="h-3 w-3 rounded border-[var(--color-border)] accent-[var(--color-primary)]"
-              />
-              Connected only
-            </label>
-          )}
         </div>
 
         {/* Price ticker */}
@@ -501,15 +528,16 @@ export function CreateExecutor() {
       {/* Main Area: Chart + Right Panel */}
       <div className="flex min-h-0 flex-1">
         {/* Chart + Bottom Pane */}
-        <div className="min-w-0 flex-1 flex flex-col border-r border-[var(--color-border)]">
+        <div className="min-w-0 flex-1 flex flex-col">
           <div className="flex-1 min-h-0 overflow-hidden bg-[var(--color-surface)]">
             <GridChart
-              key={`${connector}:${pair}:${gridState.interval}:${gridState.lookbackSeconds}`}
+              key={`${connector}:${pair}:${gridState.interval}`}
               server={server}
               connector={connector}
               pair={pair}
               interval={gridState.interval}
               lookbackSeconds={gridState.lookbackSeconds}
+
               startPrice={chartProps.startPrice}
               endPrice={chartProps.endPrice}
               limitPrice={chartProps.limitPrice}
@@ -520,105 +548,139 @@ export function CreateExecutor() {
               pricePrecision={pricePrecision}
               extraLines={chartProps.extraLines}
               executorOverlays={mainOverlays}
+              positions={mainPositions}
+              selectedExecutorId={selectedExecutorId}
             />
           </div>
-          <TradeBottomPane
-            executors={mainExecutors}
-            positions={mainPositions}
-            isLoadingPositions={isLoadingPositions}
-          />
+          {/* Horizontal resize handle */}
+          <div
+            className="group/hdrag relative h-1.5 shrink-0 cursor-row-resize border-y border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-primary)]/10 active:bg-[var(--color-primary)]/20 transition-colors"
+            onMouseDown={startVDrag}
+          >
+            <div className="absolute inset-x-0 top-1/2 mx-auto h-px w-12 -translate-y-1/2 rounded bg-amber-400/60 group-hover/hdrag:bg-amber-400 transition-colors" />
+          </div>
+          <div style={{ height: bottomPaneHeight }} className="shrink-0 overflow-hidden">
+            <TradeBottomPane
+              executors={mainExecutors}
+              positions={mainPositions}
+              isLoadingPositions={isLoadingPositions}
+              connector={connector}
+              pair={pair}
+              isSpot={isSpot}
+              selectedExecutorId={selectedExecutorId}
+              onExecutorSelect={(ex) => setSelectedExecutorId(ex?.id ?? null)}
+            />
+          </div>
+        </div>
+
+        {/* Vertical resize handle */}
+        <div
+          className="group/vdrag relative w-1.5 shrink-0 cursor-col-resize border-x border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-primary)]/10 active:bg-[var(--color-primary)]/20 transition-colors"
+          onMouseDown={startHDrag}
+        >
+          <div className="absolute inset-y-0 left-1/2 my-auto h-12 w-px -translate-x-1/2 rounded bg-amber-400/60 group-hover/vdrag:bg-amber-400 transition-colors" />
         </div>
 
         {/* Right Panel */}
-        <div className="flex w-72 shrink-0 flex-col bg-[var(--color-surface)] xl:w-80">
-          {/* Type Tabs */}
-          <div className="border-b border-[var(--color-border)]">
-            <div className="flex">
-              {TYPE_TABS.map((tab) => (
-                <button
-                  key={tab.value}
-                  onClick={() => handleTypeChange(tab.value)}
-                  className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2.5 text-[11px] font-medium transition-colors ${
-                    executorType === tab.value
-                      ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
-                      : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
-                  }`}
-                >
-                  {tab.icon}
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Config Panel */}
-          <div className="flex-1 overflow-y-auto">
-            {executorType === "grid" && (
-              <GridConfigPanel state={gridState} dispatch={gridDispatch} currentPrice={currentPrice} isSpot={isSpot} />
-            )}
-            {executorType === "position" && (
-              <PositionConfigPanel state={positionConfig.state} dispatch={positionConfig.dispatch} currentPrice={currentPrice} isSpot={isSpot} pair={pair} />
-            )}
-            {executorType === "order" && (
-              <OrderConfigPanel state={orderConfig.state} dispatch={orderConfig.dispatch} currentPrice={currentPrice} isSpot={isSpot} pair={pair} />
-            )}
-            {executorType === "dca" && (
-              <DCAConfigPanel state={dcaConfig.state} dispatch={dcaConfig.dispatch} currentPrice={currentPrice} isSpot={isSpot} pair={pair} />
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom Bar */}
-      <div className="flex items-center justify-between border-t border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5">
-        <div className="flex items-center gap-3 text-xs">
-          {activeValidation.valid ? (
-            <span className="text-[var(--color-green)]">Ready to launch</span>
-          ) : (
-            <span className="text-[var(--color-red)]">
-              {activeValidation.errors[0]}
-            </span>
-          )}
-          {activeSide === 1 ? (
-            <span className="rounded bg-[var(--color-green)]/20 px-1.5 py-0.5 text-[10px] font-bold text-[var(--color-green)]">LONG</span>
-          ) : (
-            <span className="rounded bg-[var(--color-red)]/20 px-1.5 py-0.5 text-[10px] font-bold text-[var(--color-red)]">SHORT</span>
-          )}
-          <span className="text-[var(--color-text-muted)]">
-            {connector} / {pair}
-          </span>
-        </div>
-
-        <button
-          onClick={() => createMutation.mutate()}
-          disabled={!activeValidation.valid || createMutation.isPending}
-          className="flex items-center gap-2 rounded-lg bg-[var(--color-primary)] px-5 py-2 text-sm font-bold text-white transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {createMutation.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Rocket className="h-4 w-4" />
-          )}
-          Create {TYPE_LABELS[executorType]}
-        </button>
-      </div>
-
-      {/* Success modal */}
-      {successId && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="flex flex-col items-center gap-3 rounded-xl border border-[var(--color-green)]/30 bg-[var(--color-surface)] px-8 py-6 shadow-2xl shadow-black/40">
-            <CheckCircle className="h-10 w-10 text-[var(--color-green)]" />
-            <div className="text-center">
-              <p className="text-sm font-semibold text-[var(--color-text)]">{TYPE_LABELS[executorType]} Created</p>
-              <p className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{successId}</p>
-            </div>
-            <p className="text-[10px] text-[var(--color-text-muted)]">Redirecting to executors...</p>
+        <div className="flex shrink-0 flex-col bg-[var(--color-surface)]" style={{ width: rightPanelWidth }}>
+          {/* Panel Mode Toggle */}
+          <div className="flex border-b border-[var(--color-border)]">
             <button
-              onClick={() => navigate("/executors")}
-              className="mt-1 rounded-lg bg-[var(--color-primary)] px-4 py-1.5 text-xs font-medium text-white hover:brightness-110"
+              onClick={() => setRightPanel("config")}
+              className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2 text-[11px] font-medium transition-colors ${
+                rightPanel === "config"
+                  ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
+                  : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
+              }`}
             >
-              Go now
+              <Settings2 className="h-3.5 w-3.5" />
+              Execute
             </button>
+            <button
+              onClick={() => setRightPanel("depth")}
+              className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2 text-[11px] font-medium transition-colors ${
+                rightPanel === "depth"
+                  ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
+                  : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              Data
+            </button>
+          </div>
+
+          {rightPanel === "config" ? (
+            <>
+              {/* Type Tabs */}
+              <div className="border-b border-[var(--color-border)]">
+                <div className="flex">
+                  {TYPE_TABS.map((tab) => (
+                    <button
+                      key={tab.value}
+                      onClick={() => handleTypeChange(tab.value)}
+                      className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2.5 text-[11px] font-medium transition-colors ${
+                        executorType === tab.value
+                          ? "border-b-2 border-[var(--color-primary)] text-[var(--color-primary)]"
+                          : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
+                      }`}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Config Panel */}
+              <div className="flex-1 overflow-y-auto">
+                {executorType === "grid" && (
+                  <GridConfigPanel state={gridState} dispatch={gridDispatch} currentPrice={currentPrice} isSpot={isSpot} />
+                )}
+                {executorType === "position" && (
+                  <PositionConfigPanel state={positionConfig.state} dispatch={positionConfig.dispatch} currentPrice={currentPrice} isSpot={isSpot} pair={pair} />
+                )}
+                {executorType === "order" && (
+                  <OrderConfigPanel state={orderConfig.state} dispatch={orderConfig.dispatch} currentPrice={currentPrice} isSpot={isSpot} pair={pair} />
+                )}
+                {executorType === "dca" && (
+                  <DCAConfigPanel state={dcaConfig.state} dispatch={dcaConfig.dispatch} currentPrice={currentPrice} isSpot={isSpot} pair={pair} />
+                )}
+              </div>
+
+              {/* Sticky Create Footer */}
+              <div className="border-t border-[var(--color-border)] p-3">
+                {!activeValidation.valid && (
+                  <p className="mb-2 text-[11px] text-[var(--color-red)]">
+                    {activeValidation.errors[0]}
+                  </p>
+                )}
+                <button
+                  onClick={() => createMutation.mutate()}
+                  disabled={!activeValidation.valid || createMutation.isPending}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--color-primary)] px-4 py-2.5 text-sm font-bold text-white transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {createMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Rocket className="h-4 w-4" />
+                  )}
+                  Create {TYPE_LABELS[executorType]}
+                </button>
+              </div>
+            </>
+          ) : (
+            <MarketDepthPanel server={server} connector={connector} pair={pair} />
+          )}
+        </div>
+      </div>
+
+      {/* Success toast */}
+      {successId && (
+        <div className="absolute bottom-16 left-1/2 z-50 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-green)]/30 bg-[var(--color-surface)] px-4 py-2.5 shadow-2xl shadow-black/40">
+            <CheckCircle className="h-4 w-4 text-[var(--color-green)]" />
+            <span className="text-xs font-medium text-[var(--color-text)]">{TYPE_LABELS[executorType]} Created</span>
+            <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{successId.slice(0, 8)}</span>
           </div>
         </div>
       )}

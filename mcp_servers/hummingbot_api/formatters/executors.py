@@ -204,11 +204,17 @@ def format_executor_detail(executor: dict[str, Any]) -> str:
     if close_timestamp is not None and close_timestamp != "N/A" and close_timestamp != 0:
         output += f"Closed: {format_timestamp(close_timestamp, '%Y-%m-%d %H:%M:%S')}\n"
 
-    # Always show custom_info if present
+    # Show custom_info summary (skip large lists/dicts to keep response compact)
     if custom_info:
         output += "\nCustom Info:\n"
         for key, value in custom_info.items():
-            output += f"  {key}: {value}\n"
+            if isinstance(value, (list, dict)):
+                if isinstance(value, list):
+                    output += f"  {key}: [{len(value)} items]\n"
+                else:
+                    output += f"  {key}: {{...}} ({len(value)} keys)\n"
+            else:
+                output += f"  {key}: {value}\n"
 
     return output
 
@@ -229,8 +235,8 @@ def format_positions_held_table(positions: list[dict[str, Any]]) -> str:
         return "No positions held."
 
     # Header
-    header = "connector           | trading_pair | side | amount       | entry_price  | current_price | unrealized_pnl | leverage"
-    separator = format_table_separator(130)
+    header = "connector           | trading_pair | side | amount       | notional     | entry_price  | current_price | unrealized_pnl | leverage"
+    separator = format_table_separator(145)
 
     # Format each position as a row
     rows = []
@@ -240,14 +246,24 @@ def format_positions_held_table(positions: list[dict[str, Any]]) -> str:
         # Handle both 'side' and 'position_side' field names
         side = str(get_field(position, "position_side", "side", default=""))[:4]
         # Handle both 'amount' and 'net_amount_base' field names
-        amount = format_number(get_field(position, "net_amount_base", "amount", default=None), decimals=6, compact=False)
+        amount_val = get_field(position, "net_amount_base", "amount", default=None)
+        amount = format_number(amount_val, decimals=6, compact=False)
         # Handle both 'entry_price' and 'buy_breakeven_price' field names
-        entry_price = format_number(get_field(position, "buy_breakeven_price", "entry_price", default=None), decimals=4, compact=False)
+        entry_price_val = get_field(position, "buy_breakeven_price", "entry_price", default=None)
+        entry_price = format_number(entry_price_val, decimals=4, compact=False)
+        # Compute notional value (amount * entry_price)
+        notional_val = None
+        if amount_val is not None and entry_price_val is not None:
+            try:
+                notional_val = abs(float(amount_val)) * float(entry_price_val)
+            except (ValueError, TypeError):
+                pass
+        notional = format_number(notional_val, decimals=2, compact=False)
         current_price = format_number(get_field(position, "current_price", default=None), decimals=4, compact=False)
         unrealized_pnl = format_number(get_field(position, "unrealized_pnl_quote", "unrealized_pnl", default=None), decimals=2, compact=False)
         leverage = str(get_field(position, "leverage", default="1"))[:8]
 
-        row = f"{connector:19} | {trading_pair:12} | {side:4} | {amount:>12} | {entry_price:>12} | {current_price:>13} | {unrealized_pnl:>14} | {leverage:>8}"
+        row = f"{connector:19} | {trading_pair:12} | {side:4} | {amount:>12} | {notional:>12} | {entry_price:>12} | {current_price:>13} | {unrealized_pnl:>14} | {leverage:>8}"
         rows.append(row)
 
     return f"{header}\n{separator}\n" + "\n".join(rows)
